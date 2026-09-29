@@ -23,6 +23,22 @@ describe("idleComposerEvidence (Codex >= 0.158)", () => {
   it("never calls a typed draft idle", () => {
     expect(idleComposerEvidence(draftAnsi)).toBeNull();
   });
+  it("colour parameters are not intensity: a coloured (RGB or palette) typed draft is never idle", () => {
+    const placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\x1b[38;2;246;226;183mtyped draft\x1b[39m"))).toBeNull();
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\x1b[38;5;2mtyped draft\x1b[39m"))).toBeNull();
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\x1b[48;2;2;2;2mtyped draft\x1b[0m"))).toBeNull();
+    // a dim placeholder that also carries a colour stays a placeholder
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\x1b[2;38;5;244mAsk Codex to do anything\x1b[0m"))).toBe("› Ask Codex to do anything");
+  });
+  it("a multi-line draft is never idle: a composer line followed directly by a continuation line", () => {
+    const placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\n  typed draft"))).toBeNull();
+    expect(idleComposerEvidence(idleAnsi.replace("anything\x1b[0m", "anything\x1b[0m\n  typed draft"))).toBeNull();
+  });
+  it("more than three footer lines under the composer is not the idle layout", () => {
+    expect(idleComposerEvidence(idleAnsi + "\n  extra 1\n  extra 2")).toBeNull();
+  });
   it("accepts an empty composer; refuses numbered selections, permission questions and plain (non-ANSI) text", () => {
     expect(idleComposerEvidence("done\n\n\x1b[1m›\x1b[0m\n\n  footer")).toBe("›");
     expect(idleComposerEvidence("Pick one\n› 1. Yes\n  2. No")).toBeNull();

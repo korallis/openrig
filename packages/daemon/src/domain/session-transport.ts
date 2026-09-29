@@ -130,51 +130,61 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
 const SGR = /\x1b\[([0-9;]*)m/g;
 const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 
+/** Apply one SGR parameter list to the dim flag. Extended-colour arguments (38/48/58 followed by 5;n or 2;r;g;b)
+ *  are consumed whole, so the "2" of a truecolour or palette colour is never read as "dim". */
+function applySgr(params: string, dim: boolean): boolean {
+  const codes = (params || "0").split(";");
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i]!;
+    if (code === "38" || code === "48" || code === "58") {
+      i += codes[i + 1] === "5" ? 2 : codes[i + 1] === "2" ? 4 : 0;
+      continue;
+    }
+    if (code === "2") dim = true;
+    else if (code === "" || code === "0" || code === "22") dim = false;
+  }
+  return dim;
+}
+
 /** True when every visible character of an ANSI line segment is rendered dim (SGR 2), as Codex draws its
  *  composer placeholder. A typed draft is normal weight, so it never qualifies. */
 function allVisibleTextDim(segment: string): boolean {
-  let dim = false, sawText = false, last = 0;
-  const visible = (text: string) => {
-    if (text.trim().length === 0) return true;
-    sawText = true;
-    return dim;
-  };
+  let dim = false, last = 0;
   for (const m of segment.matchAll(SGR)) {
-    if (!visible(segment.slice(last, m.index))) return false;
-    for (const code of (m[1] || "0").split(";")) {
-      if (code === "2") dim = true;
-      else if (code === "0" || code === "" || code === "22") dim = false;
-    }
+    if (segment.slice(last, m.index).trim().length > 0 && !dim) return false;
+    dim = applySgr(m[1] ?? "", dim);
     last = m.index! + m[0].length;
   }
-  return visible(segment.slice(last)) || !sawText;
+  return segment.slice(last).trim().length === 0 || dim;
 }
 
 /**
  * Codex >= 0.158 idle composer: the last `›`/`❯` prompt line near the bottom whose text is empty or only the
- * DIM placeholder ("Ask Codex to do anything"), followed only by footer lines. Codex draws the same composer
- * and footer DURING a turn, so this counts only when no mid-work, permission or selection pattern is present.
- * Needs an ANSI capture (`capture-pane -e`) to tell a placeholder from a typed draft. Returns the evidence line,
- * or null.
+ * DIM placeholder ("Ask Codex to do anything"), with NO continuation line under it (a multi-line draft), then a
+ * blank line and at most three footer lines. Codex draws the same composer and footer DURING a turn, so this
+ * counts only when no mid-work, permission or selection pattern is present. Needs an ANSI capture
+ * (`capture-pane -e`) to tell a placeholder from a typed draft. Returns the evidence line, or null.
  */
 export function idleComposerEvidence(ansiContent: string): string | null {
-  const ansiLines = ansiContent.split("\n").map((line) => line.replace(/\s+$/, ""));
-  const nonBlank = ansiLines.filter((line) => stripAnsi(line).trim().length > 0);
-  const tail = nonBlank.slice(-PROMPT_SCAN_LINES);
-  const plainTail = tail.map((line) => stripAnsi(line).trim());
-  const recentWindow = plainTail.slice(-8).join("\n");
-  if (MID_WORK_PATTERNS.some((pattern) => pattern.test(recentWindow))) return null;
-  if (PERMISSION_PROMPT_PATTERNS.some((pattern) => pattern.test(plainTail.join("\n")))) return null;
+  const lines = ansiContent.split("\n").map((line) => line.replace(/\s+$/, ""));
+  const plain = lines.map((line) => stripAnsi(line).trim());
+  while (plain.length && plain[plain.length - 1] === "") { plain.pop(); lines.pop(); }
+  const nonBlankTail = plain.filter((line) => line.length > 0).slice(-PROMPT_SCAN_LINES);
+  if (MID_WORK_PATTERNS.some((pattern) => pattern.test(nonBlankTail.slice(-8).join("\n")))) return null;
+  if (PERMISSION_PROMPT_PATTERNS.some((pattern) => pattern.test(nonBlankTail.join("\n")))) return null;
   let at = -1;
-  for (let i = plainTail.length - 1; i >= Math.max(0, plainTail.length - 4); i--) {
-    if (/^[❯›](\s|$)/.test(plainTail[i]!)) { at = i; break; }
+  for (let i = plain.length - 1; i >= 0; i--) {
+    if (/^[❯›](\s|$)/.test(plain[i]!)) { at = i; break; }
   }
   if (at < 0) return null;
-  const plain = plainTail[at]!;
-  if (/^[❯›]\s*\d+\.\s/.test(plain)) return null; // a numbered selection, not the composer
-  const ansi = tail[at]!;
+  const footer = plain.slice(at + 1);
+  // The composer ends at a blank line; anything directly under it is a continuation of the input.
+  if (footer.length > 0 && footer[0] !== "") return null;
+  if (footer.filter((line) => line.length > 0).length > 3) return null;
+  if (/^[❯›]\s*\d+\.\s/.test(plain[at]!)) return null; // a numbered selection, not the composer
+  const ansi = lines[at]!;
   const afterPrompt = ansi.slice(ansi.search(/[❯›]/) + 1);
-  return allVisibleTextDim(afterPrompt) ? truncateEvidence(plain) : null;
+  return allVisibleTextDim(afterPrompt) ? truncateEvidence(plain[at]!) : null;
 }
 
 export function classifyPaneActivity(paneContent: string): PaneActivityClassification {
