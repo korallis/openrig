@@ -170,16 +170,19 @@ function isCodexFooterLine(ansiLine: string, plainLine: string): boolean {
  * Codex >= 0.158 idle composer: the last `›`/`❯` prompt line near the bottom whose text is empty or only the
  * DIM placeholder ("Ask Codex to do anything"), with nothing under it but blank lines and at most three
  * RECOGNISED footer lines. Any other line below the composer (before or after a blank) is part of a draft. Codex draws the same composer and footer DURING a turn, so this
- * counts only when no mid-work, permission or selection pattern is present. Needs an ANSI capture
+ * counts only when no mid-work, permission or selection pattern appears ANYWHERE in the capture. Needs an ANSI capture
  * (`capture-pane -e`) to tell a placeholder from a typed draft. Returns the evidence line, or null.
  */
 export function idleComposerEvidence(ansiContent: string): string | null {
   const lines = ansiContent.split("\n").map((line) => line.replace(/\s+$/, ""));
   const plain = lines.map((line) => stripAnsi(line).trim());
   while (plain.length && plain[plain.length - 1] === "") { plain.pop(); lines.pop(); }
-  const nonBlankTail = plain.filter((line) => line.length > 0).slice(-PROMPT_SCAN_LINES);
-  if (MID_WORK_PATTERNS.some((pattern) => pattern.test(nonBlankTail.slice(-8).join("\n")))) return null;
-  if (PERMISSION_PROMPT_PATTERNS.some((pattern) => pattern.test(nonBlankTail.join("\n")))) return null;
+  // The whole capture, not a recent window: Codex's "Working (… esc to interrupt)" status line sits above the
+  // composer at a varying distance (queued or incoming message blocks can come in between). A stray match in
+  // history only withholds an idle verdict, the safe direction.
+  const everything = plain.join("\n");
+  if (MID_WORK_PATTERNS.some((pattern) => pattern.test(everything))) return null;
+  if (PERMISSION_PROMPT_PATTERNS.some((pattern) => pattern.test(everything))) return null;
   let at = -1;
   for (let i = plain.length - 1; i >= 0; i--) {
     if (/^[❯›](\s|$)/.test(plain[i]!)) { at = i; break; }

@@ -20,6 +20,13 @@ describe("idleComposerEvidence (Codex >= 0.158)", () => {
     expect(busyTxt).toContain("esc to interrupt");
     expect(idleComposerEvidence(busyAnsi)).toBeNull();
   });
+  it("never calls a working turn idle when a tall block sits between the status line and the composer", () => {
+    // live layout: "• Working (… esc to interrupt)" followed by an incoming message block, then the composer
+    const block = Array.from({ length: 10 }, (_, i) => `  message line ${i + 1}`).join("\n");
+    const tall = busyAnsi.replace(/(\n[^\n]*Ask Codex to do anything)/, `\n${block}$1`);
+    expect(tall).not.toBe(busyAnsi);
+    expect(idleComposerEvidence(tall)).toBeNull();
+  });
   it("never calls a typed draft idle", () => {
     expect(idleComposerEvidence(draftAnsi)).toBeNull();
   });
