@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Command } from "commander";
 import YAML from "yaml";
@@ -493,12 +494,16 @@ checkboxes do not accept an item under the selected proof policy.
         const frontmatter = YAML.stringify(header).trimEnd();
         const content = `---\n${frontmatter}\n---\n\n${body}`;
         if (opts.replace) {
-          const tmp = path.join(proofDir, `.${fileName}.${process.pid}.tmp`);
+          // A random name, created exclusively; on failure only a temp THIS run created is removed, never a file that
+          // happened to have that name already.
+          const tmp = path.join(proofDir, `.${fileName}.${process.pid}.${randomUUID()}.tmp`);
+          let created = false;
           try {
             fs.writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
+            created = true;
             fs.renameSync(tmp, target);
           } catch (e) {
-            fs.rmSync(tmp, { force: true });
+            if (created) fs.rmSync(tmp, { force: true });
             throw e;
           }
         } else {
