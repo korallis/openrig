@@ -760,6 +760,19 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings[0]!.body).toContain(missing);
   });
 
+  it("A1 NET — a row addressed to a HUMAN (external or human seat) routes its unclaimed finding to the row's source seat, never the human", async () => {
+    const human = await mkRow("lee@external");
+    const agent = await mkRow("worker@r");
+    ageCreated(human.qitemId, 90);
+    ageCreated(agent.qitemId, 90);
+    await runSweep();
+    const [toSource] = await findingsFor(human.qitemId);
+    expect(toSource?.destinationSession).toBe("sender@r"); // the seat that asked the human
+    expect(toSource?.body).toContain("unclaimed-obligation");
+    const [toAgent] = await findingsFor(agent.qitemId);
+    expect(toAgent?.destinationSession).toBe("worker@r"); // agent destinations unchanged
+  });
+
   it("FOUNDER DEFAULTS: cadence 300s and unclaimed age 60min on the daemon config surface, twinned in the module constants", async () => {
     const mod = await sweepMod();
     expect(mod.DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS).toBe(300);

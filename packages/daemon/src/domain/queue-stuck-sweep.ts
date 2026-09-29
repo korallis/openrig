@@ -24,6 +24,7 @@ import { resolvePickupThresholdMinutes } from "./queue-pickup.js";
 // legitimately wait and are never findings.
 
 import { defaultResolveOrchestrator } from "./queue-owner.js";
+import { parseSessionName } from "./session-name.js";
 import type Database from "better-sqlite3";
 import { deriveCrossHostSuccessorId, type QueueItem, type QueueRepository } from "./queue-repository.js";
 import { stalledPickupFinding } from "./queue-pickup.js";
@@ -416,10 +417,13 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const actionableAt = pendingSince(deps.db, row.qitemId) ?? row.tsCreated;
       if (actionableAt > cutoff) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
+      // A human destination (external address or human seat) can't claim, so paging the human about
+      // their own inbox is noise; the seat that asked them owns chasing or closing the row.
+      const toHuman = ["external", "human"].includes(parseSessionName(row.destinationSession).kind);
       candidates.push({
         kind: "unclaimed-obligation",
         row,
-        route: resolveOrch(row.destinationSession) ?? row.destinationSession,
+        route: toHuman && row.sourceSession ? row.sourceSession : resolveOrch(row.destinationSession) ?? row.destinationSession,
         ageMinutes: minutesSince(actionableAt, now),
         evidenceAt: actionableAt,
         why: `actionable with a destination and unclaimed for ${minutesSince(actionableAt, now)} min (threshold ${ageMinutes})`,
