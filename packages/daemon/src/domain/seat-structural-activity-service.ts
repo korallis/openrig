@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { TmuxAdapter } from "../adapters/tmux.js";
-import { classifyPaneActivity, type PaneActivityClassification } from "./session-transport.js";
+import { classifyPaneActivity, idleComposerEvidence, type PaneActivityClassification } from "./session-transport.js";
 
 /** A cached STRUCTURAL pane observation: the classifyPaneActivity verdict plus WHEN the pane was read
  *  as motion. observedAt is a LIVENESS timestamp (last time we saw the pane), NOT a hook-arrival age —
@@ -45,7 +45,7 @@ export class SeatStructuralActivityService {
   private sweeping = false; // single-flight guard: one whole-fleet sweep at a time (MUST-FIX 2)
 
   constructor(
-    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent">,
+    private readonly tmuxAdapter: Pick<TmuxAdapter, "capturePaneContent"> & Partial<Pick<TmuxAdapter, "capturePaneContentAnsi">>,
     private readonly now: () => Date = () => new Date(),
     private readonly captureLines: number = 20,
     private readonly staleAfterMs: number = DEFAULT_STRUCTURAL_STALE_MS,
@@ -79,7 +79,14 @@ export class SeatStructuralActivityService {
       this.latestBySession.delete(sessionName);
       return null;
     }
-    const c = classifyPaneActivity(content);
+    let c = classifyPaneActivity(content);
+    // Codex >= 0.158 draws a dim placeholder in its composer, which the plain-text signatures can't see; only when
+    // nothing else classified the pane, re-read it with SGR escapes and look for an idle composer.
+    if (c.state === "unknown" && this.tmuxAdapter.capturePaneContentAnsi) {
+      const ansi = await this.tmuxAdapter.capturePaneContentAnsi(sessionName, this.captureLines).catch(() => null);
+      const evidence = ansi ? idleComposerEvidence(ansi) : null;
+      if (evidence) c = { state: "agent_idle", reason: "idle_composer", evidence };
+    }
     const obs: StructuralObservation = {
       state: c.state,
       reason: c.reason,

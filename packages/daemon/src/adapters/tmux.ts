@@ -760,6 +760,16 @@ export class TmuxAdapter {
     }
   }
 
+  /** Like capturePaneContent, but keeps SGR escapes (`-e`) so a dim placeholder can be told from typed text. */
+  async capturePaneContentAnsi(paneId: string, lines: number = 20): Promise<string | null> {
+    try {
+      const output = await this.exec(`tmux capture-pane -e -p -t ${shellQuote(paneId)} -S -${lines}`);
+      return output || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Capture the currently VISIBLE pane screen (no scrollback). Returns null if
    * unavailable. The live-terminal seed (OPR.0.4.0.38) must use the visible
