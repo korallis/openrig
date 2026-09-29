@@ -6,11 +6,13 @@ import type { SeatIdentityVerdict } from "./types.js";
 import { SeatIdentityStore, SelfHostIdentityStore } from "./seat-identity-store.js";
 import { RESERVED_HOST_IDS, validateHostRegistry } from "./hosts/hosts-registry-reader.js";
 
-/** Default identity-reconcile cadence: 5s. Process identity changes rarely
+/** Default identity-reconcile cadence: 15s. Process identity changes rarely
  *  (a seat's pane/process is stable for its whole life), and the check is
  *  more expensive than the 1Hz activity poll (per-seat pane PID + command
- *  tmux reads), so a slower cadence is the right cost/freshness trade. */
-export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 5000;
+ *  tmux reads, two whole-host `ps` snapshots): ~200 spawns per sweep on an
+ *  87-seat host, each blocking the event loop while the daemon forks. At 5s
+ *  that was over a quarter of the daemon's CPU. */
+export const DEFAULT_IDENTITY_POLL_INTERVAL_MS = 15000;
 
 /** Foreground commands that read as a bare shell (a seat that dropped to a
  *  prompt, or an orphan/QA-squat shell occupying the pane). Mirrors the
@@ -96,6 +98,7 @@ export class SeatIdentityReconciler {
   private readonly store: SeatIdentityStore;
   private readonly listProcesses: NativeProcessLister;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private reconciling = false; // single-flight: a slow sweep (ps under load) never overlaps the next tick
 
   constructor(deps: SeatIdentityReconcilerDeps) {
     this.db = deps.db;
@@ -264,7 +267,9 @@ export class SeatIdentityReconciler {
   start(intervalMs: number = DEFAULT_IDENTITY_POLL_INTERVAL_MS): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.reconcileAll();
+      if (this.reconciling) return;
+      this.reconciling = true;
+      void this.reconcileAll().finally(() => { this.reconciling = false; });
     }, intervalMs);
     if (this.timer && typeof this.timer === "object" && "unref" in this.timer) {
       (this.timer as NodeJS.Timeout).unref();

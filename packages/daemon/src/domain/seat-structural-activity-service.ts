@@ -12,13 +12,16 @@ export interface StructuralObservation {
   observedAt: string;
 }
 
-export const DEFAULT_STRUCTURAL_POLL_INTERVAL_MS = 1000;
+// 5s, not 1s: every seat costs one or two tmux spawns per sweep, and each spawn blocks the event loop while the
+// daemon forks (anon_pipe_read until exec; ~12-20ms at ~1GB RSS). At 1s, 87 seats saturated the loop (healthz and
+// accept stalled). Hooks and the 1Hz window-activity sampler still carry fast working/idle changes.
+export const DEFAULT_STRUCTURAL_POLL_INTERVAL_MS = 5000;
 // A cached observation is authoritative only while CURRENT. Past this window with no fresh capture — a
 // tmux/capture outage, a stalled poller, or a same-name occupant transition — the READ refuses it and
-// evicts it, so a stale positive verdict can never masquerade as liveness (MUST-FIX 1). 5× the poll
+// evicts it, so a stale positive verdict can never masquerade as liveness (MUST-FIX 1). 5× the poll (25s)
 // tolerates a few missed ticks; a persistently failing/stuck poller ages the row out and the ACTIVITY
 // projection falls back to the honest hook/unknown state.
-export const DEFAULT_STRUCTURAL_STALE_MS = 5000;
+export const DEFAULT_STRUCTURAL_STALE_MS = 25000;
 
 /**
  * 5b82324b — the STRUCTURAL activity cache. Sibling of SeatActivityService (which reads ONLY the tmux
