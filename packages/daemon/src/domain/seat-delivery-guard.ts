@@ -216,14 +216,27 @@ export class SeatDeliveryGuard {
 
 /** Current binding, never a latest historical session-name guess. Unbound seats
  * resolve by node/canonical address for preferences and lifecycle preflight. */
+/**
+ * Resolve a delivery target to exactly one node, most specific match first: an exact node id; else the node whose
+ * live binding (tmux session or pane) matches; else, only when no bound node matches, the logical id (any node) or the
+ * derived `member@rig` name among unbound nodes. Each tier must yield exactly one row, otherwise the target is ambiguous.
+ * (One combined query made every live seat ambiguous as soon as an archived rig of the same name kept unbound nodes.)
+ */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
-  const rows = db.prepare(`SELECT n.id AS nodeId,
+  const select = `SELECT n.id AS nodeId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant
-    FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
-    WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
-      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)`)
-    .all(name, name, name, name, name) as GuardTarget[];
-  return rows.length === 1 ? rows[0]! : null;
+    FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id`;
+  const tiers: Array<[string, unknown[]]> = [
+    [`${select} WHERE n.id=?`, [name]],
+    [`${select} WHERE b.tmux_session=? OR b.tmux_pane=?`, [name, name]],
+    // a bare logical id may name a bound node too, so it never skips one (ambiguity beats a wrong, archived target)
+    [`${select} WHERE n.logical_id=? OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)`, [name, name]],
+  ];
+  for (const [sql, args] of tiers) {
+    const rows = db.prepare(sql).all(...args) as GuardTarget[];
+    if (rows.length) return rows.length === 1 ? rows[0]! : null;
+  }
+  return null;
 }
