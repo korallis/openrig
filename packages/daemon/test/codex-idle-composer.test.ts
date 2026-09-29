@@ -35,12 +35,26 @@ describe("idleComposerEvidence (Codex >= 0.158)", () => {
     const placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
     expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\n  typed draft"))).toBeNull();
     expect(idleComposerEvidence(idleAnsi.replace("anything\x1b[0m", "anything\x1b[0m\n  typed draft"))).toBeNull();
+    // a blank line inside the draft is not a footer boundary
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\n\n  typed draft"))).toBeNull();
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "first line\n\n  second paragraph"))).toBeNull();
+    // typed text that merely looks like a footer (no footer styling) is still a draft
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\n\n  gpt-6 high · note · done"))).toBeNull();
+    expect(idleComposerEvidence(idleAnsi.replace(placeholder, "\n\n  ? for shortcuts"))).toBeNull();
   });
-  it("more than three footer lines under the composer is not the idle layout", () => {
+  it("the idle layout holds with or without a blank line before the footer", () => {
+    const tight = idleAnsi.replace(/(Ask Codex to do anything\x1b\[0m)\n\n/, "$1\n");
+    expect(tight).not.toBe(idleAnsi);
+    expect(idleComposerEvidence(tight)).toBe("› Ask Codex to do anything");
+  });
+  it("unrecognised or too many lines under the composer are not the idle layout", () => {
     expect(idleComposerEvidence(idleAnsi + "\n  extra 1\n  extra 2")).toBeNull();
+    const footer = idleAnsi.split("\n").filter(l => l.includes("for shortcuts"))[0]!;
+    expect(idleComposerEvidence(idleAnsi + "\n" + footer + "\n" + footer)).toBeNull(); // 4 footer lines
   });
   it("accepts an empty composer; refuses numbered selections, permission questions and plain (non-ANSI) text", () => {
-    expect(idleComposerEvidence("done\n\n\x1b[1m›\x1b[0m\n\n  footer")).toBe("›");
+    const hint = idleAnsi.split("\n").find(l => l.includes("for shortcuts"))!;
+    expect(idleComposerEvidence(`done\n\n\x1b[1m›\x1b[0m\n\n${hint}`)).toBe("›");
     expect(idleComposerEvidence("Pick one\n› 1. Yes\n  2. No")).toBeNull();
     expect(idleComposerEvidence("Do you want to proceed?\n\x1b[1m›\x1b[0m \x1b[2mAsk\x1b[0m")).toBeNull();
     expect(idleComposerEvidence(idleTxt)).toBeNull(); // without SGR a placeholder can't be told from a draft

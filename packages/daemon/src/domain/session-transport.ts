@@ -158,10 +158,18 @@ function allVisibleTextDim(segment: string): boolean {
   return segment.slice(last).trim().length === 0 || dim;
 }
 
+/** A recognised Codex footer line, by its styling, which typed text never has: the coloured
+ *  `<model> <effort> · <cwd> · <task>` status line, or the `? for shortcuts` hint with its bold `?`. */
+function isCodexFooterLine(ansiLine: string, plainLine: string): boolean {
+  const colouredStatus = /^\S+(?: \S+)? · \S/.test(plainLine) && /\x1b\[(?:[0-9;]*;)?38;[25];/.test(ansiLine);
+  const shortcutsHint = /\x1b\[1m\?\x1b\[0m for shortcuts/.test(ansiLine);
+  return colouredStatus || shortcutsHint;
+}
+
 /**
  * Codex >= 0.158 idle composer: the last `›`/`❯` prompt line near the bottom whose text is empty or only the
- * DIM placeholder ("Ask Codex to do anything"), with NO continuation line under it (a multi-line draft), then a
- * blank line and at most three footer lines. Codex draws the same composer and footer DURING a turn, so this
+ * DIM placeholder ("Ask Codex to do anything"), with nothing under it but blank lines and at most three
+ * RECOGNISED footer lines. Any other line below the composer (before or after a blank) is part of a draft. Codex draws the same composer and footer DURING a turn, so this
  * counts only when no mid-work, permission or selection pattern is present. Needs an ANSI capture
  * (`capture-pane -e`) to tell a placeholder from a typed draft. Returns the evidence line, or null.
  */
@@ -177,10 +185,12 @@ export function idleComposerEvidence(ansiContent: string): string | null {
     if (/^[❯›](\s|$)/.test(plain[i]!)) { at = i; break; }
   }
   if (at < 0) return null;
-  const footer = plain.slice(at + 1);
-  // The composer ends at a blank line; anything directly under it is a continuation of the input.
-  if (footer.length > 0 && footer[0] !== "") return null;
-  if (footer.filter((line) => line.length > 0).length > 3) return null;
+  let footerLines = 0;
+  for (let i = at + 1; i < plain.length; i++) {
+    if (plain[i] === "") continue;
+    if (!isCodexFooterLine(lines[i]!, plain[i]!)) return null; // draft text, not footer
+    if (++footerLines > 3) return null;
+  }
   if (/^[❯›]\s*\d+\.\s/.test(plain[at]!)) return null; // a numbered selection, not the composer
   const ansi = lines[at]!;
   const afterPrompt = ansi.slice(ansi.search(/[❯›]/) + 1);
