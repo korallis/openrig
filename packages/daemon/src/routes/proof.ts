@@ -35,20 +35,22 @@ export function proofRoutes(): Hono {
     const id = qualified?.[1] ?? project;
     if (qualified && project !== undefined && project !== qualified[1]) throw new JudgmentError("project_conflict", `Scope names project ${qualified[1]} but --project names ${project}; select one project`);
     const scope = qualified ? qualified[2]! : rawScope;
-    if (id === undefined) return { root: indexer(c).slicesRoot, scope, owner: indexer(c) };
-    try { return { root: projectById(c, id).missionsRoot, scope, owner: null }; }
+    if (id === undefined) { const owner = indexer(c); return { root: owner.slicesRoot, evidenceRoot: path.dirname(owner.slicesRoot), scope, owner }; }
+    // Evidence is prepared against the project root (where project.yaml lives), the same root recordJudgment derives,
+    // so prepared references still match at judgment time under a nested authored missions.root.
+    try { const p = projectById(c, id); return { root: p.missionsRoot, evidenceRoot: p.root, scope, owner: null }; }
     catch (e) {
       if (!(e instanceof ProjectReadError)) throw e;
       throw new JudgmentError(e.code, e.message, e.code === "project_not_found" ? 404 : e.code === "invalid_project" ? 400 : 409);
     }
   };
   app.get("/", c => {
-    const { root, scope } = target(c, c.req.query("scope"), c.req.query("project"));
+    const { root, evidenceRoot, scope } = target(c, c.req.query("scope"), c.req.query("project"));
     if (!scope) return c.json({ ...readProjectReadiness(root), sourceObservation: proofSourceObservation(c) });
     const dir = resolveProofScope(root, scope);
     if (path.basename(path.dirname(dir)) !== "slices") return c.json({ ...readMissionReadiness(dir), sourceObservation: proofSourceObservation(c) });
     const refs = c.req.queries("evidence") ?? [];
-    return c.json({ ...readSliceReadiness(dir), sourceObservation: proofSourceObservation(c), ...(refs.length ? { preparedEvidence: refs.map(ref => evidenceAt(path.dirname(root), dir, ref)) } : {}) });
+    return c.json({ ...readSliceReadiness(dir), sourceObservation: proofSourceObservation(c), ...(refs.length ? { preparedEvidence: refs.map(ref => evidenceAt(evidenceRoot, dir, ref)) } : {}) });
   });
   app.post("/judge", async c => {
     const body = await c.req.json<JudgeInput & { actorSession?: string; project?: string }>().catch(() => null);
