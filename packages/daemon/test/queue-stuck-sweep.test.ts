@@ -760,17 +760,58 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings[0]!.body).toContain(missing);
   });
 
-  it("A1 NET — a row addressed to a HUMAN (external or human seat) routes its unclaimed finding to the row's source seat, never the human", async () => {
-    const human = await mkRow("lee@external");
+  /** A running managed seat: rig + node + latest session running. */
+  function liveSeat(session: string): void {
+    const [member, rig] = session.split("@");
+    db.prepare("INSERT OR IGNORE INTO rigs(id,name) VALUES (?,?)").run(`rig-${rig}`, rig);
+    db.prepare("INSERT INTO nodes(id,rig_id,logical_id) VALUES (?,?,?)").run(`node-${session}`, `rig-${rig}`, member);
+    db.prepare("INSERT INTO sessions(id,node_id,session_name,status) VALUES (?,?,?,'running')").run(`sess-${session}`, `node-${session}`, session);
+  }
+  async function humanRow(dest: string, source: string): Promise<QueueItem> {
+    const row = await repo.create({ sourceSession: source, destinationSession: dest, body: "please decide", summary: "Decide X", evidenceRef: "docs/x.md" });
+    ageCreated(row.qitemId, 90);
+    return row;
+  }
+
+  it("A1 NET — a row to a HUMAN (external or native human seat) routes its finding to the LIVE source seat", async () => {
+    liveSeat("sender@r");
+    const ext = await humanRow("lee@external", "sender@r");
+    const native = await humanRow("human@kernel", "sender@r");
     const agent = await mkRow("worker@r");
-    ageCreated(human.qitemId, 90);
     ageCreated(agent.qitemId, 90);
     await runSweep();
-    const [toSource] = await findingsFor(human.qitemId);
-    expect(toSource?.destinationSession).toBe("sender@r"); // the seat that asked the human
-    expect(toSource?.body).toContain("unclaimed-obligation");
-    const [toAgent] = await findingsFor(agent.qitemId);
-    expect(toAgent?.destinationSession).toBe("worker@r"); // agent destinations unchanged
+    expect((await findingsFor(ext.qitemId))[0]?.destinationSession).toBe("sender@r");
+    expect((await findingsFor(native.qitemId))[0]?.destinationSession).toBe("sender@r");
+    expect((await findingsFor(agent.qitemId))[0]?.destinationSession).toBe("worker@r"); // agent routing unchanged
+  });
+
+  it("A1 NET — a human's row whose source seat is gone (deleted rig) goes to its orchestrator, else the operator; never the human", async () => {
+    const gone = await humanRow("lee@external", "sender@deleted-rig");
+    const orphan = await humanRow("lee@external", "other@deleted-rig");
+    const result = await runSweep({ resolveOrchestrator: (s: string) => (s === "sender@deleted-rig" ? "lead@r" : null) });
+    expect(result.result.outcome).not.toBe("failed");
+    expect((await findingsFor(gone.qitemId))[0]?.destinationSession).toBe("lead@r");
+    expect((await findingsFor(orphan.qitemId))[0]?.destinationSession).toBe("operator-agent@kernel");
+  });
+
+  it("A1 NET — a human's row with an external source never routes back to a human", async () => {
+    const row = await humanRow("lee@external", "someone@external");
+    await runSweep({ resolveOrchestrator: () => "lee@external" });
+    expect((await findingsFor(row.qitemId))[0]?.destinationSession).toBe("operator-agent@kernel");
+  });
+
+  it("A1 NET — one unroutable finding is logged and the rest of the pass still runs", async () => {
+    // the real repository rejects a destination in an unknown rig; only 'r' and 'kernel' exist here
+    const strict = new QueueRepository(db, new EventBus(db), { validateRig: (s: string) => ["r", "kernel"].includes(s.split("@")[1] ?? "") });
+    const bad = await strict.create({ sourceSession: "sender@r", destinationSession: "worker@r", body: "x" });
+    const good = await strict.create({ sourceSession: "sender@r", destinationSession: "worker2@r", body: "y" });
+    ageCreated(bad.qitemId, 90); ageCreated(good.qitemId, 90);
+    const lines: string[] = [];
+    const out = await runSweep({ queueRepo: strict, log: (l: string) => lines.push(l),
+      resolveOrchestrator: (s: string) => (s === "worker@r" ? "lead@vanished-rig" : null) });
+    expect(out.result.outcome).not.toBe("failed");
+    expect(lines.some(l => l.includes(`could not route unclaimed-obligation finding for ${bad.qitemId} to lead@vanished-rig`))).toBe(true);
+    expect((await findingsFor(good.qitemId))[0]?.destinationSession).toBe("worker2@r");
   });
 
   it("FOUNDER DEFAULTS: cadence 300s and unclaimed age 60min on the daemon config surface, twinned in the module constants", async () => {

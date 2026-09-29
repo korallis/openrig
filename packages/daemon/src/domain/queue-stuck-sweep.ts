@@ -24,7 +24,20 @@ import { resolvePickupThresholdMinutes } from "./queue-pickup.js";
 // legitimately wait and are never findings.
 
 import { defaultResolveOrchestrator } from "./queue-owner.js";
-import { parseSessionName } from "./session-name.js";
+import { isHumanSeatSessionRef } from "./session-name.js";
+
+/** Last-resort owner for a finding about a human's row when no live agent seat can take it (local deployment:
+ *  the kernel operator; override with OPENRIG_SWEEP_HUMAN_FALLBACK). Never a human. */
+const HUMAN_FINDING_FALLBACK = process.env.OPENRIG_SWEEP_HUMAN_FALLBACK?.trim() || "operator-agent@kernel";
+
+/** A session that is a managed seat running right now: its latest session row is running and its rig exists. */
+function isLiveManagedSeat(db: Database.Database, session: string): boolean {
+  const row = db.prepare(
+    `SELECT s.status FROM sessions s JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id
+      WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1`,
+  ).get(session) as { status: string } | undefined;
+  return row?.status === "running";
+}
 import type Database from "better-sqlite3";
 import { deriveCrossHostSuccessorId, type QueueItem, type QueueRepository } from "./queue-repository.js";
 import { stalledPickupFinding } from "./queue-pickup.js";
@@ -417,13 +430,19 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const actionableAt = pendingSince(deps.db, row.qitemId) ?? row.tsCreated;
       if (actionableAt > cutoff) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
-      // A human destination (external address or human seat) can't claim, so paging the human about
-      // their own inbox is noise; the seat that asked them owns chasing or closing the row.
-      const toHuman = ["external", "human"].includes(parseSessionName(row.destinationSession).kind);
+      // A human destination (external address or human seat) can't claim, so paging the human about their own inbox
+      // is noise. The finding goes to the seat that asked, if it is a live managed seat; else to its orchestrator,
+      // the destination's orchestrator, or finally the operator. Never back to a human.
+      const toHuman = isHumanSeatSessionRef(row.destinationSession);
+      const humanRoute = () => [
+        row.sourceSession && isLiveManagedSeat(deps.db, row.sourceSession) ? row.sourceSession : null,
+        row.sourceSession ? resolveOrch(row.sourceSession) : null,
+        resolveOrch(row.destinationSession),
+      ].find((r): r is string => !!r && !isHumanSeatSessionRef(r)) ?? HUMAN_FINDING_FALLBACK;
       candidates.push({
         kind: "unclaimed-obligation",
         row,
-        route: toHuman && row.sourceSession ? row.sourceSession : resolveOrch(row.destinationSession) ?? row.destinationSession,
+        route: toHuman ? humanRoute() : resolveOrch(row.destinationSession) ?? row.destinationSession,
         ageMinutes: minutesSince(actionableAt, now),
         evidenceAt: actionableAt,
         why: `actionable with a destination and unclaimed for ${minutesSince(actionableAt, now)} min (threshold ${ageMinutes})`,
@@ -512,18 +531,32 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         // Age is derived at read time; an unchanged scan is not a transition.
         findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: existing.qitem_id, action: "refreshed" });
       } else if (!existing || evidenceIsNewer(c.evidenceAt, existing.ts_updated)) {
-        const created = await deps.queueRepo.create({
+        const create = (route: string) => deps.queueRepo.create({
           qitemId: recoveryId(deps.db, c.row.qitemId),
           // The detector is machinery, not a seat: the obligation's own creator is the
           // finding's source (the workflow-exception precedent).
           sourceSession: c.row.sourceSession,
-          destinationSession: c.route,
+          destinationSession: route,
           body: evidenceBody(deps.db, c),
           summary: `Stuck sweep: ${c.verificationTargets ? "successor-verification-required" : c.kind} on ${c.row.qitemId} (${c.ageMinutes} min)`,
           evidenceRef: `rig queue show ${c.row.qitemId}`,
           tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId)],
         });
-        findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: created.qitemId, action: "created" });
+        // One unroutable finding must not cost the rest of the pass: log it, try the operator once for a human's
+        // row, and move on.
+        let created: QueueItem | null = null;
+        try {
+          created = await create(c.route);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          const retry = isHumanSeatSessionRef(c.row.destinationSession) && c.route !== HUMAN_FINDING_FALLBACK;
+          log(`[stuck-sweep] could not route ${c.kind} finding for ${c.row.qitemId} to ${c.route}: ${why}${retry ? `; trying ${HUMAN_FINDING_FALLBACK}` : ""}`);
+          if (retry) {
+            try { created = await create(HUMAN_FINDING_FALLBACK); }
+            catch (err2) { log(`[stuck-sweep] could not route it to ${HUMAN_FINDING_FALLBACK} either: ${err2 instanceof Error ? err2.message : String(err2)}`); }
+          }
+        }
+        if (created) findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: created.qitemId, action: "created" });
       }
     }
 
