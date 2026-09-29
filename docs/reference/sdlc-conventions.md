@@ -116,7 +116,10 @@ When the owning scope selects `proofPolicy.judges`, use `rig proof judge` to
 record an attributed accept, reject or withdraw decision on a contract item,
 and `rig proof show` to read derived readiness up through slice, mission and
 project. The nearest slice, mission or project policy selects authorized judges;
-`rig proof --help` describes setup, selectors and evidence requirements. A
+`rig proof --help` describes setup, selectors and evidence requirements. In a
+multi-project workspace catalog, name the project with `--project <id>` or a
+`<id>:` scope prefix (`hc-prime:m0/slices/01-t001`); unqualified scopes use the
+daemon's selected workspace. A
 correction preserves history and unrelated judgments without editing ancestor
 status checklists. An artifact can identify non-code work without a fabricated
 commit. Evidence capture (`proof add`), policy acceptance, higher outcome
