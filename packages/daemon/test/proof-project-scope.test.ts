@@ -13,21 +13,21 @@ const fixtures: string[] = [];
 afterEach(() => { for (const p of fixtures.splice(0)) fs.rmSync(p, { recursive: true, force: true }); });
 const write = (p: string, data: string | object) => { fs.mkdirSync(join(p, ".."), { recursive: true }); fs.writeFileSync(p, typeof data === "string" ? data : YAML.stringify(data)); };
 
-function project(root: string, id: string, judge: string) {
-  write(join(root, "project.yaml"), { kind: "project", metadata: { id }, proofPolicy: { judges: [judge] }, missions: { root: "missions" } });
+function project(root: string, id: string, judge: string, missionsDir = "missions") {
+  write(join(root, "project.yaml"), { kind: "project", metadata: { id }, proofPolicy: { judges: [judge] }, missions: { root: missionsDir } });
   write(join(root, "README.md"), `# ${id}\n`);
-  const mission = join(root, "missions", "m0"), slice = join(mission, "slices", "01-t001");
+  const mission = join(root, missionsDir, "m0"), slice = join(mission, "slices", "01-t001");
   write(join(mission, "mission.yaml"), { kind: "mission", metadata: { name: "m0", status: "active" }, composition: { slices: [{ ref: "slices/01-t001/slice.yaml", order: 1, active: true }] } });
   write(join(slice, "slice.yaml"), { kind: "slice", metadata: { id: "01-t001", status: "draft" } });
   write(join(slice, "SPEC.md"), `---\nid: 01-t001\n---\n# ${id}\n\n## Proof contract\n- [ ] Prove ${id}.\n`);
   write(join(slice, "proof", "evidence.md"), `Observed ${id}.\n`);
-  return { missions: join(root, "missions"), slice };
+  return { missions: join(root, missionsDir), slice };
 }
 
-function fixture() {
+function fixture(hcMissions = "missions") {
   const workspace = fs.mkdtempSync(join(tmpdir(), "proof-catalog-")); fixtures.push(workspace);
   write(join(workspace, "workspace.yaml"), { projects: [{ id: "hc-prime", root: "hc-prime" }, { id: "mta", root: "mta" }] });
-  const hc = project(join(workspace, "hc-prime"), "hc-prime", "judge@hc");
+  const hc = project(join(workspace, "hc-prime"), "hc-prime", "judge@hc", hcMissions);
   const mta = project(join(workspace, "mta"), "mta", "judge@hc");
   // The daemon's single selected slices root is a different (legacy) project.
   const legacy = project(join(workspace, "legacy"), "legacy", "judge@hc");
@@ -81,6 +81,16 @@ describe("project-qualified proof scope (#132)", () => {
     const flagged = await f.judge("m0/slices/01-t001", { project: "mta" }, f.mta.slice);
     expect(flagged.status).toBe(201);
     expect(fs.existsSync(join(f.mta.slice, "proof/judgments/00000001.md"))).toBe(true);
+  });
+
+  it("prepares evidence against the project root, so prepare+judge agree under a nested missions.root", async () => {
+    const f = fixture("work/missions");
+    const scope = "hc-prime:m0/slices/01-t001";
+    const view = await (await f.get(`scope=${encodeURIComponent(scope)}&evidence=proof%2Fevidence.md`)).json();
+    expect(view.preparedEvidence).toEqual([expect.objectContaining({ ref: "work/missions/m0/slices/01-t001/proof/evidence.md" })]);
+    const res = await f.judge(scope, { expectedEvidence: view.preparedEvidence });
+    expect(res.status).toBe(201);
+    expect((await res.json()).judgment.evidence).toEqual(view.preparedEvidence);
   });
 
   it("applies path_escape per project root — a sibling project or the workspace is outside", async () => {
