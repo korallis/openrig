@@ -118,6 +118,55 @@ describe("rig proof add: binary --file, .md names, no overwrite (patch 137)", ()
     expect(fs.readFileSync(note, "utf8")).toBe("# what I saw\n");
   });
 
+  // QA round 1: --replace must never write THROUGH the existing name
+  it("--replace over a hardlink of the --file source is refused, and the source is unchanged", async () => {
+    const source = path.join(workRoot, "source.txt");
+    fs.writeFileSync(source, "the original evidence\n");
+    fs.linkSync(source, path.join(proofDir, "linked.md"));
+    await add("--file", source, "--name", "linked.md", "--replace");
+    expect(process.exitCode).toBe(1);
+    expect(errs.join("\n")).toContain("would overwrite its own --file source");
+    expect(fs.readFileSync(source, "utf8")).toBe("the original evidence\n");
+  });
+
+  it("--replace over a hardlink of some other file replaces only the proof/ entry, never the other file", async () => {
+    const other = path.join(workRoot, "other.md");
+    fs.writeFileSync(other, "someone else's notes\n");
+    fs.linkSync(other, path.join(proofDir, "notes.md"));
+    await add("--body", "new note", "--name", "notes.md", "--replace");
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.readFileSync(other, "utf8")).toBe("someone else's notes\n");
+    expect(fs.readFileSync(path.join(proofDir, "notes.md"), "utf8")).toMatch(/new note$/);
+  });
+
+  it("--replace over a symlink to an image outside proof/ replaces the link, never the image", async () => {
+    const outside = path.join(workRoot, "outside.png");
+    fs.writeFileSync(outside, PNG);
+    fs.symlinkSync(outside, path.join(proofDir, "image-link.md"));
+    await add("--body", "note", "--name", "image-link.md", "--replace");
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.readFileSync(outside).equals(PNG)).toBe(true);
+    expect(fs.lstatSync(path.join(proofDir, "image-link.md")).isSymbolicLink()).toBe(false);
+    expect(listing().filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    // without --replace, an existing link of that name is refused and left alone
+    fs.rmSync(path.join(proofDir, "image-link.md"));
+    fs.symlinkSync(outside, path.join(proofDir, "image-link.md"));
+    process.exitCode = undefined;
+    await add("--body", "note", "--name", "image-link.md");
+    expect(process.exitCode).toBe(1);
+    expect(fs.lstatSync(path.join(proofDir, "image-link.md")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(outside).equals(PNG)).toBe(true);
+  });
+
+  it("--replace over a symlink to the --file source is refused", async () => {
+    const source = path.join(workRoot, "src.md");
+    fs.writeFileSync(source, "keep me\n");
+    fs.symlinkSync(source, path.join(proofDir, "src-link.md"));
+    await add("--file", source, "--name", "src-link.md", "--replace");
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(source, "utf8")).toBe("keep me\n");
+  });
+
   it("images stay attachable the supported way: --media next to a text body", async () => {
     fs.writeFileSync(path.join(proofDir, "shot.png"), PNG);
     await add("--body", "the dashboard shows real data", "--media", "shot.png", "--name", "qa-clear.md");

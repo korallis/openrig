@@ -473,27 +473,45 @@ checkboxes do not accept an item under the selected proof policy.
             action: "Pass a bare filename; the drop path owns the directory.",
           });
         }
-        // Never overwrite silently: an existing artifact is replaced only with --replace, and never the --file source
-        // itself (that rewrites the evidence it was read from).
-        if (opts.file && fs.existsSync(target) && fs.realpathSync(target) === fs.realpathSync(opts.file)) {
-          throw new ScopeCliError({
-            fact: `The artifact proof/${fileName} would overwrite its own --file source.`,
-            consequence: "The artifact was NOT dropped — the source evidence is left as it is.",
-            action: "Pass a different --name, or drop from a copy outside proof/.",
-          });
+        // Never overwrite silently, and never write THROUGH an existing name. Without --replace the artifact is created
+        // exclusively ("wx"; an existing file or link of that name refuses). With --replace it is written to a temp file
+        // in proof/ and renamed over the name: that swaps the directory entry, so a hardlink (e.g. to the --file source)
+        // or a symlink (e.g. to an image outside proof/) keeps its content. The --file source is never the target: an
+        // existing name that is the same file (device + inode, so hardlinks and symlinks count) is refused.
+        const existing = fs.statSync(target, { throwIfNoEntry: false });
+        if (opts.file && existing) {
+          const src = fs.statSync(opts.file);
+          if (src.dev === existing.dev && src.ino === existing.ino) {
+            throw new ScopeCliError({
+              fact: `The artifact proof/${fileName} would overwrite its own --file source.`,
+              consequence: "The artifact was NOT dropped — the source evidence is left as it is.",
+              action: "Pass a different --name, or drop from a copy outside proof/.",
+            });
+          }
         }
         fs.mkdirSync(proofDir, { recursive: true });
         const frontmatter = YAML.stringify(header).trimEnd();
-        try {
-          // "wx" creates only, so nothing is overwritten even if the file appears between the check and the write.
-          fs.writeFileSync(target, `---\n${frontmatter}\n---\n\n${body}`, { encoding: "utf8", flag: opts.replace ? "w" : "wx" });
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-          throw new ScopeCliError({
-            fact: `proof/${fileName} already exists.`,
-            consequence: "The artifact was NOT dropped — the existing artifact is left as it is.",
-            action: "Pass a different --name, or --replace to overwrite that artifact deliberately.",
-          });
+        const content = `---\n${frontmatter}\n---\n\n${body}`;
+        if (opts.replace) {
+          const tmp = path.join(proofDir, `.${fileName}.${process.pid}.tmp`);
+          try {
+            fs.writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
+            fs.renameSync(tmp, target);
+          } catch (e) {
+            fs.rmSync(tmp, { force: true });
+            throw e;
+          }
+        } else {
+          try {
+            fs.writeFileSync(target, content, { encoding: "utf8", flag: "wx" });
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+            throw new ScopeCliError({
+              fact: `proof/${fileName} already exists.`,
+              consequence: "The artifact was NOT dropped — the existing artifact is left as it is.",
+              action: "Pass a different --name, or --replace to overwrite that artifact deliberately.",
+            });
+          }
         }
 
         // Echo the parsed header — the seat sees what the composer will see.
