@@ -3295,8 +3295,18 @@ export class QueueRepository {
   /** Null means legacy/no OWNER history; inactive means OWNER history exists
    *  but the row no longer projects a current human-notification episode. */
   private currentDeliveryEpisode(item: QueueItem): { notificationKey: string; startedAt: string } | "inactive" | null {
-    const transition = this.transitionLog.latestOwnerNotificationForQitem(item.qitemId);
+    let transition = this.transitionLog.latestOwnerNotificationForQitem(item.qitemId);
     if (!transition) return null;
+    // A human-decision-resolved notice on a row that is no longer active is never posted: the Slack outbound lists
+    // active rows only (listHumanAlerts), and the human is the one who just answered (e.g. a direct reply closing the
+    // row). It opens no new delivery episode; the delivery that happened is the latest OUTBOUND notice's.
+    if (transition.ownerNotificationKind === "human-decision-resolved" && !["pending", "in-progress", "blocked"].includes(item.state)) {
+      const outbound = this.transitionLog.listForQitem(item.qitemId)
+        .filter((t) => t.ownerNotificationLevel != null && t.ownerNotificationKind != null && t.ownerNotificationKind !== "human-decision-resolved")
+        .sort((a, b) => b.transitionId - a.transitionId)[0];
+      if (!outbound) return "inactive";
+      transition = outbound;
+    }
     const registry = this.loadHumanRegistryFn();
     if (!registry.ok) return "inactive";
     const humanAddress = transition.ownerNotificationKind === "human-decision-resolved"
