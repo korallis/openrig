@@ -1100,7 +1100,8 @@ export class SeatLifecycleService {
     const parsed = parseSessionName(ref);
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
-      const rigs = this.rigRepo.findRigsByName(parsed.rig);
+      // Live rigs first: an archived same-name rig must not make a live seat ambiguous (patch 138).
+      const rigs = this.rigRepo.findRigsByNamePreferLive(parsed.rig);
       return rigs.flatMap((rig) => getNodeInventory(this.db, rig.id).filter((entry) =>
         entry.canonicalSessionName === ref
         || deriveCanonicalFromEntry(entry) === ref

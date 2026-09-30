@@ -82,7 +82,8 @@ export class SeatStatusService {
     if (parsed.kind === "canonical") {
       const localRef = parsed.member;
       const rigName = parsed.rig;
-      const rigs = this.rigRepo.findRigsByName(rigName);
+      // Live rigs first: an archived same-name rig must not make a live seat ambiguous (patch 138).
+      const rigs = this.rigRepo.findRigsByNamePreferLive(rigName);
       return rigs.flatMap((rig) => this.entriesForRig(rig.id).filter((entry) =>
         entry.canonicalSessionName === ref || entry.logicalId === localRef
       ).map((entry) => ({ entry })));

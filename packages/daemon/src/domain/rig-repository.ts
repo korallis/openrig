@@ -517,6 +517,16 @@ export class RigRepository {
     return rows.map((r) => this.rowToRig(r));
   }
 
+  /** Rigs named `name` for resolving a SEAT: the live (non-archived) ones when any exist, else the archived ones. An
+   *  archived rig that shares a live rig's name (an older generation) can then never make a live seat ambiguous, while
+   *  a seat of a rig that only exists archived stays addressable. */
+  findRigsByNamePreferLive(name: string): Rig[] {
+    const live = this.db
+      .prepare("SELECT * FROM rigs WHERE name = ? AND archived_at IS NULL ORDER BY created_at")
+      .all(name) as RigRow[];
+    return live.length > 0 ? live.map((r) => this.rowToRig(r)) : this.findRigsByName(name);
+  }
+
   getRigSummaries(filter?: RigArchiveFilter): Array<{ id: string; name: string; nodeCount: number; latestSnapshotAt: string | null; latestSnapshotId: string | null; hasServices: boolean; archivedAt: string | null }> {
     const cond = archiveWhereClause("r.archived_at", filter);
     const where = cond ? `WHERE ${cond}` : "";
