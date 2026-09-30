@@ -890,6 +890,45 @@ export class TmuxAdapter {
    *   - `null` when the target is missing OR the value is unparseable
    *     (consumers treat null as "no signal", distinct from "idle").
    */
+  /** Patch 139: every session's current-window `#{window_activity}` in ONE tmux call, keyed by session name: the same
+   *  value `readPaneLastActivity(<session name>)` reads (display-message -t <session> resolves to the session's current
+   *  window). Only well-formed timestamps are included, so a missing key means "read it the per-target way". Null when
+   *  tmux can't be read at all. */
+  async readAllSessionWindowActivity(): Promise<Map<string, number> | null> {
+    try {
+      const output = await this.exec(`tmux list-windows -a -F '#{session_name}\t#{window_active}\t#{window_activity}'`);
+      const out = new Map<string, number>();
+      for (const line of output.split("\n")) {
+        const [session, active, activity] = line.split("\t");
+        if (!session || active !== "1" || !activity || !/^\d+$/.test(activity.trim())) continue;
+        const n = Number(activity.trim());
+        if (Number.isFinite(n) && n > 0) out.set(session, n);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Patch 139: every pane's pid and current command in ONE tmux call, keyed by pane id (%N): the values
+   *  `getPanePid` / `getPaneCommand` read per pane. Panes without a valid pid are left out (read those per pane).
+   *  Null when tmux can't be read at all. */
+  async readAllPaneProcesses(): Promise<Map<string, { pid: number; command: string | null }> | null> {
+    try {
+      const output = await this.exec(`tmux list-panes -a -F '#{pane_id}\t#{pane_pid}\t#{pane_current_command}'`);
+      const out = new Map<string, { pid: number; command: string | null }>();
+      for (const line of output.split("\n")) {
+        const [id, pidText, ...cmd] = line.split("\t");
+        const pid = parseInt((pidText ?? "").trim(), 10);
+        if (!id || !Number.isFinite(pid) || pid <= 0) continue;
+        out.set(id, { pid, command: cmd.join("\t").trim() || null });
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
   async readPaneLastActivity(paneId: string): Promise<number | null> {
     try {
       const output = await this.exec(
