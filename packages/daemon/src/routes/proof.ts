@@ -58,11 +58,13 @@ export function proofRoutes(): Hono {
   app.get("/", c => {
     const { root, evidenceRoot, scope, project } = target(c, c.req.query("scope"), c.req.query("project"), c.req.query("projectRoot"));
     const common = { sourceObservation: observation(c, project), ...(project ? { project } : {}) };
-    if (!scope) return c.json({ ...readProjectReadiness(root), ...common });
+    // A catalog project's own root bounds policy, scope identity and evidence (never an ancestor's project.yaml).
+    const bound = project?.root;
+    if (!scope) return c.json({ ...readProjectReadiness(root, undefined, bound), ...common });
     const dir = resolveProofScope(root, scope);
-    if (path.basename(path.dirname(dir)) !== "slices") return c.json({ ...readMissionReadiness(dir), ...common });
+    if (path.basename(path.dirname(dir)) !== "slices") return c.json({ ...readMissionReadiness(dir, undefined, bound), ...common });
     const refs = c.req.queries("evidence") ?? [];
-    return c.json({ ...readSliceReadiness(dir), ...common, ...(refs.length ? { preparedEvidence: refs.map(ref => evidenceAt(evidenceRoot, dir, ref)) } : {}) });
+    return c.json({ ...readSliceReadiness(dir, undefined, undefined, bound), ...common, ...(refs.length ? { preparedEvidence: refs.map(ref => evidenceAt(evidenceRoot, dir, ref)) } : {}) });
   });
   app.post("/judge", async c => {
     const body = await c.req.json<JudgeInput & { actorSession?: string; project?: string; projectRoot?: string }>().catch(() => null);
@@ -73,8 +75,8 @@ export function proofRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "proof judgment", bodyClaim: body.actorSession });
     if (!identity.ok) return identity.response;
     const { project: _project, projectRoot: _projectRoot, ...input } = body;
-    const { root, scope, owner } = target(c, body.scope, body.project, body.projectRoot);
-    const result = recordJudgment(root, { ...input, scope: scope! }, identity.session, resolveRecordedProvenance(c, identity));
+    const { root, scope, owner, project } = target(c, body.scope, body.project, body.projectRoot);
+    const result = recordJudgment(root, { ...input, scope: scope! }, identity.session, resolveRecordedProvenance(c, identity), project?.root);
     owner?.invalidate();
     // The receipt is already durable. A lost notification must not turn a committed write into a claimed rollback.
     let notification = "unchanged";
