@@ -413,6 +413,25 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(sendText).toHaveBeenCalled();
   });
 
+  it("Codex 0.158: --wait-for-idle does not send to the placeholder while a Working row sits far above it, hook aged out", async () => {
+    const fixedNow = new Date("2026-06-27T12:00:00.000Z");
+    const seat = seedCodexSeat();
+    seedCodexHook(fixedNow, "UserPromptSubmit", 330_000, seat);
+    const busyPane = [
+      "• Working (6m 02s • esc to interrupt)",
+      ...Array.from({ length: 10 }, (_, i) => `  incoming message line ${i + 1}`),
+      "",
+      CODEX_PLACEHOLDER_PANE,
+    ].join("\n");
+    const { sendText } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => busyPane, sendText }), { now: () => fixedNow });
+    const r = await t.send(seat, "hi", { waitForIdleMs: 50 });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe("wait_for_idle_timeout");
+    expect(r.activity?.state).toBe("running");
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
   it("Claude Code is unchanged: a bare ❯ pane still sends past a send-stale running hook", async () => {
     const fixedNow = new Date("2026-06-27T12:00:00.000Z");
     agentActivityStore.recordHookEvent({

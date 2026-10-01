@@ -194,6 +194,20 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
       evidence: truncateEvidence(idleStatusBarLine),
     };
   }
+  // Codex keeps its empty-composer placeholder on screen during a turn, and its status row
+  // (`Working … esc to interrupt`) can sit well above the composer when queued or incoming message
+  // blocks come in between. So under the placeholder, a mid-work line anywhere in the capture is
+  // the turn still running; a stray match in history only costs the idle verdict, the safe direction.
+  const placeholderMidWork = idlePromptLine && CODEX_EMPTY_COMPOSER_PATTERN.test(idlePromptLine)
+    ? findPatternEvidence(lastNonBlank, MID_WORK_PATTERNS)
+    : null;
+  if (placeholderMidWork) {
+    return {
+      state: "agent_active",
+      reason: "mid_work_pattern",
+      evidence: placeholderMidWork,
+    };
+  }
   if (idlePromptLine && !MID_WORK_PATTERNS.some((pattern) => pattern.test(recentWindow))) {
     return {
       state: "agent_idle",

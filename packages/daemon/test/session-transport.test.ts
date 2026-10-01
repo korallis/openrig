@@ -94,6 +94,69 @@ describe("agent pane activity classifier", () => {
     expect(result.reason).toBe("mid_work_pattern");
   });
 
+  // Codex 0.158 (redacted live pane tails): same placeholder, footer is a status line plus
+  // `? for shortcuts`. Its Working row can sit well above the composer, past the 8-line window,
+  // when queued or incoming message blocks come in between.
+  const CODEX_0158_FOOTER = [
+    "› Ask Codex to do anything",
+    "",
+    "  gpt-6-sol high · ~/code/projects/openrig · Read the task",
+    "  ? for shortcuts                                     ⚠ 3 warnings · f2 to view",
+  ];
+
+  it("classifies an idle Codex 0.158 composer placeholder as agent_idle", () => {
+    const result = classifyPaneActivity([
+      "• Done. The change is committed and the tests pass.",
+      "",
+      "  5:47 PM",
+      "",
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_idle");
+    expect(result.reason).toBe("idle_prompt");
+  });
+
+  it("keeps a working Codex 0.158 pane as agent_active", () => {
+    const result = classifyPaneActivity([
+      "• Working (1h 09m 39s • esc to interrupt)",
+      "  └ Tip: Use /title to choose what appears in your terminal's title.",
+      "",
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.reason).toBe("mid_work_pattern");
+  });
+
+  it("reads the Codex placeholder as active when its Working row sits more than 8 lines above it", () => {
+    const result = classifyPaneActivity([
+      "• Working (1h 09m 39s • esc to interrupt)",
+      "  └ Tip: Use /title to choose what appears in your terminal's title.",
+      "",
+      ...Array.from({ length: 10 }, (_, i) => `  incoming message line ${i + 1}`),
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.reason).toBe("mid_work_pattern");
+    expect(result.evidence).toBe("• Working (1h 09m 39s • esc to interrupt)");
+  });
+
+  it("still reads a bare prompt with stale Working text beyond the 8-line window as idle", () => {
+    const result = classifyPaneActivity([
+      "◦ Working (9m 26s • esc to interrupt)",
+      ...Array.from({ length: 10 }, (_, i) => `  output line ${i + 1}`),
+      "❯ ",
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_idle");
+    expect(result.reason).toBe("idle_prompt");
+  });
+
   it("does not treat typed Codex 0.157 composer text as the idle placeholder", () => {
     const result = classifyPaneActivity([
       "› run the test suite and report",
