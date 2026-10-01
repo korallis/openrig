@@ -146,6 +146,32 @@ describe("agent pane activity classifier", () => {
     expect(result.evidence).toBe("• Working (1h 09m 39s • esc to interrupt)");
   });
 
+  it("keeps completed Working prose more than 8 lines above the placeholder as history: idle", () => {
+    for (const prose of ["• Working directory: /tmp/project", "• Working tree is clean."]) {
+      const result = classifyPaneActivity([
+        prose,
+        ...Array.from({ length: 10 }, (_, i) => `  output line ${i + 1}`),
+        "",
+        ...CODEX_0158_FOOTER,
+      ].join("\n"));
+
+      expect(result.state, prose).toBe("agent_idle");
+      expect(result.reason, prose).toBe("idle_prompt");
+    }
+  });
+
+  it("reads a far turn-status row with a reasoning-summary header as active", () => {
+    const result = classifyPaneActivity([
+      "• Exploring the test fixtures (2m 03s • esc to interrupt)",
+      ...Array.from({ length: 10 }, (_, i) => `  incoming message line ${i + 1}`),
+      "",
+      ...CODEX_0158_FOOTER,
+    ].join("\n"));
+
+    expect(result.state).toBe("agent_active");
+    expect(result.evidence).toBe("• Exploring the test fixtures (2m 03s • esc to interrupt)");
+  });
+
   it("still reads a bare prompt with stale Working text beyond the 8-line window as idle", () => {
     const result = classifyPaneActivity([
       "◦ Working (9m 26s • esc to interrupt)",

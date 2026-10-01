@@ -46,6 +46,11 @@ const MID_WORK_PATTERNS = [
 // never lets a placeholder-only verdict override a display-fresh running/needs_input hook.
 const CODEX_EMPTY_COMPOSER_PATTERN = /^›\s+Ask Codex to do anything\s*$/;
 
+// Codex's live turn-status row: a bullet, a header ("Working", or the reasoning summary Codex shows in its place),
+// then the elapsed time and "esc to interrupt" in parentheses, e.g. "• Working (1h 09m 39s • esc to interrupt)".
+// Completed output that merely says "Working directory: …" or "Working tree is clean." never matches.
+const CODEX_TURN_STATUS_PATTERN = /^[•◦]\s+\S.*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)/;
+
 const IDLE_PROMPT_PATTERNS = [
   /^[❯›]\s*$/,  // prompt char + optional whitespace + end-of-line only
   CODEX_EMPTY_COMPOSER_PATTERN,
@@ -194,12 +199,13 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
       evidence: truncateEvidence(idleStatusBarLine),
     };
   }
-  // Codex keeps its empty-composer placeholder on screen during a turn, and its status row
-  // (`Working … esc to interrupt`) can sit well above the composer when queued or incoming message
-  // blocks come in between. So under the placeholder, a mid-work line anywhere in the capture is
-  // the turn still running; a stray match in history only costs the idle verdict, the safe direction.
+  // Codex keeps its empty-composer placeholder on screen during a turn, and its turn-status row
+  // (`• Working (… esc to interrupt)`) can sit well above the composer when queued or incoming
+  // message blocks come in between. So under the placeholder, that row anywhere in the capture is
+  // the turn still running. Only the status-row signature counts at that range: completed prose
+  // ("Working tree is clean.") further up is history, and the 8-line generic check below still applies.
   const placeholderMidWork = idlePromptLine && CODEX_EMPTY_COMPOSER_PATTERN.test(idlePromptLine)
-    ? findPatternEvidence(lastNonBlank, MID_WORK_PATTERNS)
+    ? findPatternEvidence(lastNonBlank, [CODEX_TURN_STATUS_PATTERN])
     : null;
   if (placeholderMidWork) {
     return {

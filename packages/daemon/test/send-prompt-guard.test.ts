@@ -432,6 +432,23 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(sendText).not.toHaveBeenCalled();
   });
 
+  it("Codex 0.158: completed 'Working tree is clean.' prose far above the placeholder does not block a send", async () => {
+    const fixedNow = new Date("2026-06-27T12:00:00.000Z");
+    const seat = seedCodexSeat();
+    seedCodexHook(fixedNow, "UserPromptSubmit", 330_000, seat);
+    const idlePane = [
+      "• Working tree is clean.",
+      ...Array.from({ length: 10 }, (_, i) => `  summary line ${i + 1}`),
+      "",
+      CODEX_PLACEHOLDER_PANE,
+    ].join("\n");
+    const { sendText } = spies();
+    const t = makeTransport(mockTmux({ capturePaneContent: async () => idlePane, sendText }), { now: () => fixedNow });
+    const r = await t.send(seat, "hi", { waitForIdleMs: 50 });
+    expect(r.ok).toBe(true);
+    expect(sendText).toHaveBeenCalled();
+  });
+
   it("Claude Code is unchanged: a bare ❯ pane still sends past a send-stale running hook", async () => {
     const fixedNow = new Date("2026-06-27T12:00:00.000Z");
     agentActivityStore.recordHookEvent({
