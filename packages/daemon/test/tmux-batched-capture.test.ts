@@ -35,10 +35,12 @@ function shellToArgv(cmd: string): string[] {
   for (const m of cmd.matchAll(/'((?:[^']|'"'"')*)'|(\\;)|(\S+)/g)) argv.push(m[1] !== undefined ? m[1].replace(/'"'"'/g, "'") : m[2] ? ";" : m[3]!);
   return argv;
 }
+/** A pane's text as capture-pane prints it: newline-terminated lines. */
 const pane = (n: string) => `• ${n} output\n\n❯ \n`;
 
 describe("TmuxAdapter.capturePanesContent (#308)", () => {
   for (const mode of ["shell", "argv"] as const) {
+    /** A TmuxAdapter over the fake tmux in this test's exec mode, recording every tmux argv it runs. */
     function adapter(panes: Panes, opts: { vanished?: Set<string>; noServer?: boolean; maxBuffer?: number } = {}) {
       const calls: string[][] = [];
       const run = (argv: string[]) => {
@@ -95,6 +97,7 @@ describe("TmuxAdapter.capturePanesContent (#308)", () => {
 });
 
 describe("SeatStructuralActivityService sweep with the batched capture (#308)", () => {
+  /** A test DB with one running, tmux-bound seat per name (`<name>@r`). */
   function dbWithRunningSeats(names: string[]) {
     const db = createFullTestDb();
     const rigRepo = new RigRepository(db);

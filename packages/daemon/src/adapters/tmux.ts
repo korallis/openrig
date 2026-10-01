@@ -904,6 +904,7 @@ export class TmuxAdapter {
     // A chunk that fails is split in half and retried, down to one session: its output overflowed exec's buffer (wide,
     // colour-dense panes: each capture is the visible pane plus the requested history) or a session vanished since
     // the listing. A single session that still fails is left out: the caller reads it per target.
+    /** Capture one chunk with a single chained tmux call into `out`; on failure, split it in half and retry each half. */
     const captureChunk = async (chunk: string[]): Promise<void> => {
       const nonce = randomUUID().replace(/-/g, "");
       const mark = (k: number) => `__openrig_capture_${nonce}_${k}__`;
