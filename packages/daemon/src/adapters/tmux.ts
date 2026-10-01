@@ -196,6 +196,10 @@ function classifyWriteError(err: unknown): TmuxResult {
 }
 
 /** Shell-quote a string using single quotes (POSIX-safe). */
+/** One pane's text from a batched capture, with the time its chunk was read (#309 review). `text` is null for a
+ *  session that is gone or an empty capture. */
+export interface PaneCapture { text: string | null; capturedAt: Date }
+
 /** The most sessions one batched capture chains (#308). Not a byte bound: a chunk whose output overflows exec's buffer
  *  fails and is split in half. */
 const CAPTURE_BATCH = 24;
@@ -885,9 +889,10 @@ export class TmuxAdapter {
    * Targets are exact (`=<name>:`): no prefix match, and a name with a "." still resolves. tmux stops a chain at its
    * first failing command, so a chunk that fails is split in half and retried (an oversized output, or a session gone
    * since the listing); a single session that still fails is left OUT of the map, and the caller reads it per target.
-   * Null when tmux can't be listed at all.
+   * Null when tmux can't be listed at all. Each entry carries the time its own chunk was read (`capturedAt`), so a
+   * slow later chunk can't make an earlier capture look fresh.
    */
-  async capturePanesContent(targets: string[], lines: number = 20): Promise<Map<string, string | null> | null> {
+  async capturePanesContent(targets: string[], lines: number = 20, now: () => Date = () => new Date()): Promise<Map<string, PaneCapture> | null> {
     let live: Set<string>;
     try {
       const listing = await this.run(["tmux", "list-sessions", "-F", "#{session_name}"], "tmux list-sessions -F '#{session_name}'");
@@ -895,11 +900,12 @@ export class TmuxAdapter {
     } catch {
       return null;
     }
-    const out = new Map<string, string | null>();
+    const out = new Map<string, PaneCapture>();
+    const listedAt = now();
     const present: string[] = [];
     for (const t of new Set(targets)) {
       if (live.has(t)) present.push(t);
-      else out.set(t, null);
+      else out.set(t, { text: null, capturedAt: listedAt });
     }
     // A chunk that fails is split in half and retried, down to one session: its output overflowed exec's buffer (wide,
     // colour-dense panes: each capture is the visible pane plus the requested history) or a session vanished since
@@ -916,8 +922,10 @@ export class TmuxAdapter {
         `display-message -p -t ${shellQuote(`=${t}:`)} ${shellQuote(mark(k))} \\; capture-pane -p -t ${shellQuote(`=${t}:`)} -S -${lines}`,
       ).join(" \\; ");
       let output: string;
+      let capturedAt: Date;
       try {
         output = await this.run(argv, legacy);
+        capturedAt = now(); // when THIS chunk's panes were read, not when the sweep ends
       } catch {
         if (chunk.length > 1) {
           const half = Math.ceil(chunk.length / 2);
@@ -944,7 +952,7 @@ export class TmuxAdapter {
         if (seg == null) return; // its marker never printed: read per target
         // capture-pane prints its lines newline-terminated, as the per-target read returns them
         const text = seg.length ? seg.join("\n") + "\n" : "";
-        out.set(t, text === "" ? null : text);
+        out.set(t, { text: text === "" ? null : text, capturedAt });
       });
     };
     for (let i = 0; i < present.length; i += CAPTURE_BATCH) await captureChunk(present.slice(i, i + CAPTURE_BATCH));

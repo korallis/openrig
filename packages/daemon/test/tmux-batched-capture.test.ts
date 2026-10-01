@@ -58,7 +58,7 @@ describe("TmuxAdapter.capturePanesContent (#308)", () => {
       const { a, calls } = adapter({ "a@r": pane("a"), "b.x@r": pane("b.x"), "o'q@r": pane("o'q") });
       const got = await a.capturePanesContent(["a@r", "gone@r", "b.x@r", "o'q@r"], 20);
       expect(calls).toHaveLength(2);
-      expect(Object.fromEntries(got!)).toEqual({ "gone@r": null, "a@r": pane("a"), "b.x@r": pane("b.x"), "o'q@r": pane("o'q") });
+      expect(Object.fromEntries([...got!].map(([k, v]) => [k, v.text]))).toEqual({ "gone@r": null, "a@r": pane("a"), "b.x@r": pane("b.x"), "o'q@r": pane("o'q") });
     });
 
     it(`${mode}: 50 distinct live sessions = 1 listing + 3 chained calls of at most 24`, async () => {
@@ -67,7 +67,7 @@ describe("TmuxAdapter.capturePanesContent (#308)", () => {
       const got = await a.capturePanesContent(Object.keys(panes), 20);
       expect(calls).toHaveLength(1 + 3);
       for (const c of calls.slice(1)) expect(c.filter((x) => x === "capture-pane").length).toBeLessThanOrEqual(24);
-      for (let i = 0; i < 50; i++) expect(got!.get(`s${i}@r`)).toBe(pane(`s${i}`));
+      for (let i = 0; i < 50; i++) expect(got!.get(`s${i}@r`)?.text).toBe(pane(`s${i}`));
     });
 
     it(`${mode}: a session that vanished after the listing is isolated by halving; only it is left out`, async () => {
@@ -78,11 +78,28 @@ describe("TmuxAdapter.capturePanesContent (#308)", () => {
       expect(calls.length).toBeLessThan(1 + 3 + 24);
     });
 
+    it(`${mode}: each pane keeps the time its own chunk was read; a slow later chunk doesn't renew earlier ones (#309 review)`, async () => {
+      const panes = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`s${i}@r`, pane(`s${i}`)]));
+      let clock = 1_000_000;
+      const now = () => new Date(clock);
+      const { a } = adapter(panes);
+      const run = (a as unknown as { run: (argv: string[], legacy?: string) => Promise<string> }).run.bind(a);
+      (a as unknown as { run: unknown }).run = async (argv: string[], legacy?: string) => {
+        const out = await run(argv, legacy);
+        if (argv.includes("capture-pane")) clock += argv.includes("=s24@r:") ? 6_000 : 100; // the second chunk is slow
+        return out;
+      };
+      const got = await a.capturePanesContent(Object.keys(panes), 20, now);
+      expect(got!.get("s0@r")!.capturedAt.getTime()).toBe(1_000_100);
+      expect(got!.get("s23@r")!.capturedAt.getTime()).toBe(1_000_100);
+      expect(got!.get("s24@r")!.capturedAt.getTime()).toBe(1_006_100);
+    });
+
     it(`${mode}: a chunk whose output overflows the exec buffer is split until it fits`, async () => {
       const panes = Object.fromEntries(Array.from({ length: 24 }, (_, i) => [`w${i}@r`, `w${i}:` + "x".repeat(40_000) + "\n"]));
       const { a, calls } = adapter(panes, { maxBuffer: 300_000 });
       const got = await a.capturePanesContent(Object.keys(panes), 20);
-      for (const n of Object.keys(panes)) expect(got!.get(n)).toBe(panes[n]);
+      for (const n of Object.keys(panes)) expect(got!.get(n)?.text).toBe(panes[n]);
       expect(calls).toHaveLength(1 + 1 + 2 + 4);
     });
 
@@ -90,8 +107,8 @@ describe("TmuxAdapter.capturePanesContent (#308)", () => {
       expect(await adapter({ "a@r": pane("a") }, { noServer: true }).a.capturePanesContent(["a@r"], 20)).toBeNull();
       const spoof = "__openrig_capture_00000000000000000000000000000000_1__\n";
       const got = await adapter({ "a@r": `x\n${spoof}y\n`, "b@r": pane("b") }).a.capturePanesContent(["a@r", "b@r"], 20);
-      expect(got!.get("a@r")).toBe(`x\n${spoof}y\n`);
-      expect(got!.get("b@r")).toBe(pane("b"));
+      expect(got!.get("a@r")?.text).toBe(`x\n${spoof}y\n`);
+      expect(got!.get("b@r")?.text).toBe(pane("b"));
     });
   }
 });
@@ -118,7 +135,7 @@ describe("SeatStructuralActivityService sweep with the batched capture (#308)", 
     const tmux = {
       capturePanesContent: async (targets: string[]) => {
         batches++;
-        return new Map<string, string | null>(targets.map((t) => [t, t === "c@r" ? null : t === "a@r" ? "⠋ Working… (esc to interrupt)" : "out\n❯ "]));
+        return new Map(targets.map((t) => [t, { text: t === "c@r" ? null : t === "a@r" ? "⠋ Working… (esc to interrupt)" : "out\n❯ ", capturedAt: new Date() }]));
       },
       capturePaneContent: async () => { single++; return "❯ "; },
     } as never;
@@ -131,11 +148,29 @@ describe("SeatStructuralActivityService sweep with the batched capture (#308)", 
     expect(svc.getStructuralActivity("c@r")).toBeNull();
   });
 
+  it("an observation keeps its capture's own time: after a slow sweep an early capture is not renewed and expires (#309 review)", async () => {
+    const db = dbWithRunningSeats(["a", "b"]);
+    let clock = Date.parse("2026-10-01T12:00:00.000Z");
+    const capturedEarly = new Date(clock);
+    const tmux = {
+      capturePanesContent: async () => {
+        clock += 5_200; // a later chunk held the sweep for 5.2 s
+        return new Map([["a@r", { text: "⠋ Working… (esc to interrupt)", capturedAt: capturedEarly }], ["b@r", { text: "out\n❯ ", capturedAt: new Date(clock) }]]);
+      },
+      capturePaneContent: async () => "❯ ",
+    } as never;
+    const svc = new SeatStructuralActivityService(tmux, () => new Date(clock));
+    await svc.pollAllRunningTmuxSeats(db);
+    // a's text is 5.2 s old: past the 5 s freshness window, so it is not served as current
+    expect(svc.getStructuralActivity("a@r")).toBeNull();
+    expect(svc.getStructuralActivity("b@r")?.observedAt).toBe(new Date(clock).toISOString());
+  });
+
   it("a seat the batch left out, or a failed/absent batch, is captured per seat as before", async () => {
     const db = dbWithRunningSeats(["a", "b"]);
     const perSeat: string[] = [];
     const partial = {
-      capturePanesContent: async () => new Map<string, string | null>([["a@r", "out\n❯ "]]),
+      capturePanesContent: async () => new Map([["a@r", { text: "out\n❯ ", capturedAt: new Date() }]]),
       capturePaneContent: async (t: string) => { perSeat.push(t); return "⠹ Working… esc to interrupt"; },
     } as never;
     const svc = new SeatStructuralActivityService(partial);

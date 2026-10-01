@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { TmuxAdapter } from "../adapters/tmux.js";
+import type { PaneCapture, TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneActivity, type PaneActivityClassification } from "./session-transport.js";
 
 /** A cached STRUCTURAL pane observation: the classifyPaneActivity verdict plus WHEN the pane was read
@@ -68,10 +68,13 @@ export class SeatStructuralActivityService {
    *  null or failed capture INVALIDATES the prior row (never leaves a stale positive verdict) and
    *  returns null (MUST-FIX 1). `prefetched` (#308) is the sweep's batched capture: a session it holds (null = gone or
    *  empty) is used as is; one it lacks is captured here, per seat. */
-  async pollSeat(sessionName: string, prefetched?: Map<string, string | null> | null): Promise<StructuralObservation | null> {
+  async pollSeat(sessionName: string, prefetched?: Map<string, PaneCapture> | null): Promise<StructuralObservation | null> {
     let content: string | null;
+    let observedAt: Date | null = null;
     if (prefetched?.has(sessionName)) {
-      content = prefetched.get(sessionName) ?? null;
+      const capture = prefetched.get(sessionName)!;
+      content = capture.text;
+      observedAt = capture.capturedAt; // the capture's own time, never the end of the sweep (#309 review)
     } else {
       try {
         content = await this.tmuxAdapter.capturePaneContent(sessionName, this.captureLines);
@@ -89,7 +92,7 @@ export class SeatStructuralActivityService {
       state: c.state,
       reason: c.reason,
       evidence: c.evidence,
-      observedAt: this.now().toISOString(),
+      observedAt: (observedAt ?? this.now()).toISOString(),
     };
     this.latestBySession.set(sessionName, obs);
     return obs;
@@ -119,7 +122,7 @@ export class SeatStructuralActivityService {
       // #308: one batched capture for the whole fleet (a few tmux calls) instead of a fork per seat; anything the batch
       // didn't cover (no listing, a failed chunk) is read per seat inside pollSeat, as before.
       const prefetched = this.tmuxAdapter.capturePanesContent
-        ? await this.tmuxAdapter.capturePanesContent(rows.map((r) => r.session_name), this.captureLines).catch(() => null)
+        ? await this.tmuxAdapter.capturePanesContent(rows.map((r) => r.session_name), this.captureLines, this.now).catch(() => null)
         : null;
       await Promise.all(rows.map(async (r) => {
         try { await this.pollSeat(r.session_name, prefetched); } catch { /* isolate: one seat's failure never crashes the sweep */ }
