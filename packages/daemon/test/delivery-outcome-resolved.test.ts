@@ -73,4 +73,33 @@ describe("delivery outcome: a resolved notice on a closed row opens no delivery 
     posted(id, latestKey(id));
     expect(repo.deliveryOutcomeFor(id)?.outcome).toBe("posted");
   });
+
+  it("notice posted while active, then the agent closes the row: the notice keeps its outcome (posted / transport-failed)", async () => {
+    for (const receipt of ["posted", "transport-failed"] as const) {
+      const id = await askHuman();
+      posted(id, latestKey(id));
+      repo.update({ qitemId: id, actorSession: "human-founder@external", state: "in-progress", transitionNote: "resolved",
+        ownerNotificationKind: "human-decision-resolved" } as never);
+      const resolvedKey = latestKey(id);
+      repo.update({ qitemId: id, actorSession: "daemon@kernel",
+        transitionNote: `slack-owner-notification-${receipt} notification_key=${resolvedKey} level=NOTICE${receipt === "posted" ? " message_ts=1.3" : " detail=http-500"}` });
+      repo.update({ qitemId: id, actorSession: "lead@rig", state: "done", closureReason: "no-follow-on", transitionNote: "agent closed" } as never);
+      age();
+      expect(latestKey(id), "the resolved notice is still the latest owner notification").toBe(resolvedKey);
+      expect(repo.deliveryOutcomeFor(id)?.outcome, receipt).toBe(receipt);
+    }
+  });
+
+  it("an agent's row parked on the human: ALERT posted, then the human's reply closes it -> posted, to that human", async () => {
+    const item = await repo.create({ sourceSession: "lead@rig", destinationSession: "dev@rig", body: "build it",
+      summary: "work", priority: "routine" as never } as never);
+    const id = (item as unknown as { qitemId: string }).qitemId;
+    repo.update({ qitemId: id, actorSession: "dev@rig", state: "blocked", blockedOn: "human-founder@external",
+      transitionNote: "needs the owner" } as never);
+    expect(repo.transitionLog.latestOwnerNotificationForQitem(id)?.ownerNotificationKind).toBe("human-required");
+    posted(id, latestKey(id));
+    directReplyClose(id);
+    age();
+    expect(repo.deliveryOutcomeFor(id)?.outcome).toBe("posted");
+  });
 });
