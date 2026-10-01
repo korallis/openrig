@@ -196,6 +196,10 @@ function classifyWriteError(err: unknown): TmuxResult {
 }
 
 /** Shell-quote a string using single quotes (POSIX-safe). */
+/** The most sessions one batched capture chains (#308). Not a byte bound: a chunk whose output overflows exec's buffer
+ *  fails and is split in half. */
+const CAPTURE_BATCH = 24;
+
 function shellQuote(s: string): string {
   // Replace each ' with '"'"' (end quote, double-quote the apostrophe, resume quote)
   return "'" + s.replace(/'/g, "'\"'\"'") + "'";
@@ -873,6 +877,79 @@ export class TmuxAdapter {
   }
 
   /** Capture pane content (last N lines). Returns null if unavailable. */
+  /**
+   * Capture many sessions' panes with a few tmux calls instead of one per session (#308). One `list-sessions` says
+   * which targets exist: a missing one maps to null (as a failed per-target capture) without a fork. The live ones
+   * are captured in chunks of CAPTURE_BATCH chained commands (a `display-message` marker, then `capture-pane`), each
+   * pane's output delimited by a marker unique to the call, so the text equals what `capturePaneContent` returns.
+   * Targets are exact (`=<name>:`): no prefix match, and a name with a "." still resolves. tmux stops a chain at its
+   * first failing command, so a chunk that fails is split in half and retried (an oversized output, or a session gone
+   * since the listing); a single session that still fails is left OUT of the map, and the caller reads it per target.
+   * Null when tmux can't be listed at all.
+   */
+  async capturePanesContent(targets: string[], lines: number = 20): Promise<Map<string, string | null> | null> {
+    let live: Set<string>;
+    try {
+      const listing = await this.run(["tmux", "list-sessions", "-F", "#{session_name}"], "tmux list-sessions -F '#{session_name}'");
+      live = new Set(listing.split("\n").map((s) => s.trim()).filter(Boolean));
+    } catch {
+      return null;
+    }
+    const out = new Map<string, string | null>();
+    const present: string[] = [];
+    for (const t of new Set(targets)) {
+      if (live.has(t)) present.push(t);
+      else out.set(t, null);
+    }
+    // A chunk that fails is split in half and retried, down to one session: its output overflowed exec's buffer (wide,
+    // colour-dense panes: each capture is the visible pane plus the requested history) or a session vanished since
+    // the listing. A single session that still fails is left out: the caller reads it per target.
+    const captureChunk = async (chunk: string[]): Promise<void> => {
+      const nonce = randomUUID().replace(/-/g, "");
+      const mark = (k: number) => `__openrig_capture_${nonce}_${k}__`;
+      const argv = ["tmux", ...chunk.flatMap((t, k) => [
+        ...(k > 0 ? [";"] : []),
+        "display-message", "-p", "-t", `=${t}:`, mark(k), ";", "capture-pane", "-p", "-t", `=${t}:`, "-S", `-${lines}`,
+      ])];
+      const legacy = "tmux " + chunk.map((t, k) =>
+        `display-message -p -t ${shellQuote(`=${t}:`)} ${shellQuote(mark(k))} \\; capture-pane -p -t ${shellQuote(`=${t}:`)} -S -${lines}`,
+      ).join(" \\; ");
+      let output: string;
+      try {
+        output = await this.run(argv, legacy);
+      } catch {
+        if (chunk.length > 1) {
+          const half = Math.ceil(chunk.length / 2);
+          await captureChunk(chunk.slice(0, half));
+          await captureChunk(chunk.slice(half));
+        }
+        return; // a single session that failed: read per target by the caller
+      }
+      const segments: Array<string[] | null> = chunk.map(() => null);
+      let cur = -1;
+      const outLines = output.split("\n");
+      if (outLines.length && outLines[outLines.length - 1] === "") outLines.pop(); // the final newline, not a line
+      for (const line of outLines) {
+        const m = line.startsWith(`__openrig_capture_${nonce}_`) ? /_(\d+)__$/.exec(line) : null;
+        if (m && line === mark(Number(m[1]))) {
+          cur = Number(m[1]);
+          segments[cur] = [];
+        } else if (cur >= 0) {
+          segments[cur]!.push(line);
+        }
+      }
+      chunk.forEach((t, k) => {
+        const seg = segments[k];
+        if (seg == null) return; // its marker never printed: read per target
+        // capture-pane prints its lines newline-terminated, as the per-target read returns them
+        const text = seg.length ? seg.join("\n") + "\n" : "";
+        out.set(t, text === "" ? null : text);
+      });
+    };
+    for (let i = 0; i < present.length; i += CAPTURE_BATCH) await captureChunk(present.slice(i, i + CAPTURE_BATCH));
+    return out;
+  }
+
   async capturePaneContent(paneId: string, lines: number = 20): Promise<string | null> {
     try {
       const output = await this.run(["tmux", "capture-pane", "-p", "-t", paneId, "-S", `-${lines}`],
